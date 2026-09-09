@@ -77,7 +77,9 @@ tests against a database without `test` in its name.
 ## Demo accounts
 
 `tools/seed_database.py` creates owner, team-leader, and reseller accounts using
-the passwords from `.env`. Production deployment must not use the example values.
+the development passwords from `.env`. It refuses to run when `APP_ENV` is
+`production`. A new production database must use `tools/bootstrap_owner.py`,
+which creates only the first owner and does not reset any data.
 
 ## Production deployment
 

@@ -50,9 +50,6 @@ if APP_ENV == "production":
             or is_placeholder(SESSION_SECRET_KEY)
             or len(SESSION_SECRET_KEY) < 32
         ),
-        "OWNER_PASSWORD": OWNER_PASSWORD == "demo123" or is_placeholder(OWNER_PASSWORD),
-        "TEAM_LEADER_PASSWORD": TEAM_LEADER_PASSWORD == "demo1234" or is_placeholder(TEAM_LEADER_PASSWORD),
-        "RESELLER_PASSWORD": RESELLER_PASSWORD == "demo1234" or is_placeholder(RESELLER_PASSWORD),
         "DEFAULT_ACCOUNT_PASSWORD": DEFAULT_ACCOUNT_PASSWORD == "demo1234" or is_placeholder(DEFAULT_ACCOUNT_PASSWORD),
     }
     unsafe_names = [name for name, is_unsafe in insecure_defaults.items() if is_unsafe]

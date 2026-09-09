@@ -16,9 +16,17 @@ The production stack uses Docker Compose with three services:
    The separate `POSTGRES_ADMIN_PASSWORD` is used only for database administration
    and backups; FastAPI connects as the non-superuser `APP_DB_USER`.
 6. Start the stack with `docker compose up -d --build`.
-7. Create initial classroom data only on a new database with
-   `docker compose exec app python tools/seed_database.py`.
-8. Confirm `https://YOUR_DOMAIN/health` returns `{"status":"ok"}`.
+7. Create the first owner without inserting classroom data or resetting the
+   schema. The command prompts twice for the password so it is not stored in
+   shell history:
+
+   ```sh
+   docker compose exec app python tools/bootstrap_owner.py \
+     --name "YOUR NAME" --email "you@example.com"
+   ```
+
+8. Sign in as that owner and create operational accounts from the owner portal.
+9. Confirm `https://YOUR_DOMAIN/health` returns `{"status":"ok"}`.
 
 The PostgreSQL image reads `POSTGRES_*` and `APP_DB_*` initialization values only
 when it creates an empty data volume. Changing those values later does not rotate
@@ -26,6 +34,10 @@ passwords in an existing database. For an established installation, change the
 role password inside PostgreSQL first, update `.env` to the same value, and then
 recreate the application container. Never delete the production volume as a
 password-rotation shortcut.
+
+`tools/seed_database.py` is restricted to development environments because it
+drops the application schema before inserting classroom sample records. Do not
+override that protection on a VPS.
 
 Do not expose container port 5432 in production. The database initialization
 script makes the application role the database owner without granting PostgreSQL
