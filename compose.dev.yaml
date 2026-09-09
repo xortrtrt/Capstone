@@ -5,3 +5,9 @@ services:
     networks:
       - database
       - web
+  app:
+    environment:
+      APP_ENV: development
+      OWNER_PASSWORD: ${OWNER_PASSWORD:-demo123}
+      TEAM_LEADER_PASSWORD: ${TEAM_LEADER_PASSWORD:-demo1234}
+      RESELLER_PASSWORD: ${RESELLER_PASSWORD:-demo1234}
