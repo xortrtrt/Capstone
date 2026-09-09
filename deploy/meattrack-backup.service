@@ -1,0 +1,13 @@
+[Unit]
+Description=Back up the MEATTRACK PostgreSQL database
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/meattrack
+Environment=PROJECT_DIR=/opt/meattrack
+Environment=BACKUP_DIR=/var/backups/meattrack
+EnvironmentFile=-/etc/meattrack/backup.env
+ExecStart=/bin/sh /opt/meattrack/deploy/backup.sh
+User=root

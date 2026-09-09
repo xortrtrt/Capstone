@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+__pycache__
+*.py[cod]
+*.log
+.env
+.env.*
+.pytest_cache
+backups
+node_modules
+database/*_export.sql
+database/*_import.sql

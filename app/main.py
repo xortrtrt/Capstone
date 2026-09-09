@@ -6,22 +6,26 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 
 from fastapi import FastAPI, Form, HTTPException, Request, status
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from app import repositories as data
 from app.chatbot import ask_chatbot
-from app.config import SESSION_SECRET_KEY
+from app.config import APP_ENV, SESSION_SECRET_KEY
 
 
 BASE_DIR = Path(__file__).resolve().parent
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-MEDIA_FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 app = FastAPI(title="MEATTRACK", version="0.1.0")
-app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET_KEY, same_site="lax")
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET_KEY,
+    same_site="lax",
+    https_only=APP_ENV == "production",
+)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
@@ -90,7 +94,7 @@ def product_image(value: str) -> str:
 
 
 def media_url(filename: str) -> str:
-    return f"/media/{quote(filename)}"
+    return f"/static/img/{quote(filename)}"
 
 
 templates.env.filters["currency"] = currency
@@ -154,21 +158,13 @@ def path_with_query(path: str, **params: str) -> str:
     return path + "?" + urlencode(clean)
 
 
-@app.get("/media/{filename}")
-async def media_asset(filename: str):
-    if not MEDIA_FILENAME_RE.match(filename):
-        raise HTTPException(status_code=404)
-    asset = data.media_asset_by_filename(filename)
-    if asset is None:
-        raise HTTPException(status_code=404)
-    return Response(
-        content=asset["content"],
-        media_type=asset["content_type"],
-        headers={
-            "Cache-Control": "public, max-age=3600",
-            "Content-Length": str(asset["size_bytes"]),
-        },
-    )
+@app.get("/health", include_in_schema=False)
+async def health():
+    try:
+        data.fetch_one("SELECT 1 AS ready;")
+    except Exception:
+        return JSONResponse({"status": "unhealthy"}, status_code=503)
+    return {"status": "ok"}
 
 
 def require_portal_session(request: Request, role_key: str) -> RedirectResponse | None:
@@ -536,7 +532,11 @@ async def team_order_decision(request: Request, order_id: int, decision: str):
         return guard
     if decision not in {"approve", "reject", "fulfill"}:
         raise HTTPException(status_code=404)
-    if not data.decide_order(order_id, decision):
+    try:
+        decided = data.decide_order(order_id, decision)
+    except ValueError as exc:
+        return redirect_to(safe_portal_path("team-leader", "orders", error=str(exc)))
+    if not decided:
         return redirect_to(safe_portal_path("team-leader", "orders", error="Order not found or already finalized."))
     return redirect_to(safe_portal_path("team-leader", "orders", message=f"Order {decision} action recorded."))
 

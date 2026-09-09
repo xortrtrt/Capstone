@@ -1,88 +1,101 @@
 # MEATTRACK Website
 
-FastAPI prototype for Batangas Premium's MEATTRACK public website and role-based portals.
+MEATTRACK is Batangas Premium's standalone, server-rendered web application for
+public product information and role-based owner, team-leader, and reseller
+workflows.
 
-## Framework and Stack
+## Technology
 
-- Backend framework: FastAPI
-- Template engine: Jinja2 server-rendered HTML
-- Frontend: HTML, CSS, and vanilla JavaScript
-- Database: PostgreSQL
-- Database driver: psycopg2
-- Local app server: Uvicorn
-- Local database runtime: Docker PostgreSQL container
+- FastAPI and Uvicorn
+- Jinja2 templates, HTML, CSS, and vanilla JavaScript
+- PostgreSQL accessed server-side with psycopg2
+- Docker Compose for local and Hostinger VPS operation
+- Caddy for production HTTPS and reverse proxying
 
-This project is not using React, Vue, Angular, Laravel, Django, or Node.js for the main app.
+The application does not require a mobile runtime, JavaScript framework, managed
+database platform, or database API exposed to browsers.
 
-## Run Locally
+## Local development
 
-Start the PostgreSQL Docker container first. The current local database connection expects:
-
-```text
-postgresql://meattrack:meattrack@127.0.0.1:5433/meattrack
-```
-
-Create your local environment file:
+Create a private environment file:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Then edit `.env` and fill in local secrets such as `DATABASE_URL`, `POSTGRES_PASSWORD`, `SESSION_SECRET_KEY`, `OPENROUTER_API_KEY`, and demo account passwords. The real `.env` file is ignored by Git.
+Replace every placeholder. For local access from Windows, change the hostname in
+`DATABASE_URL` from `db` to `127.0.0.1` and use port `5433`.
 
-If the database is empty or needs a reset, run:
+Start PostgreSQL with its host-only development port:
+
+```powershell
+docker compose -f compose.yaml -f compose.dev.yaml up -d db
+```
+
+Create the schema and sample classroom data. This command resets the selected
+database, so use it only with a disposable development database:
 
 ```powershell
 .venv\Scripts\python.exe tools\seed_database.py
 ```
 
-The seed script also imports every file from `app/static/img` into the PostgreSQL `media_assets` table. If you add or replace image files later without resetting the database, run:
-
-```powershell
-.venv\Scripts\python.exe tools\import_static_images.py
-```
-
-Then start FastAPI:
+Start FastAPI:
 
 ```powershell
 .venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Then open:
+Open `http://127.0.0.1:8000`. Bundled product images are served directly from
+`app/static/img`; they are not duplicated inside PostgreSQL.
 
-```text
-http://127.0.0.1:8000
-```
+## Database migrations
 
-## Demo Logins
-
-The login form has one email/password flow. Credentials are verified against the `accounts` table in PostgreSQL, and the account type determines which dashboard opens.
-
-- Owner: `patric.mapa@gmail.com` / `demo123`
-- Team Leader: `leader@batangaspremium.test` / `demo1234`
-- Reseller: `reseller@lipafresh.test` / `demo1234`
-
-Passwords are stored in `accounts.password_hash`. The seed script stores PBKDF2 password hashes, and old plain-text local demo passwords are upgraded to hashes after a successful login.
-
-## Current Implementation
-
-- Public landing page for Batangas Premium.
-- Reseller Portal: dashboard, ordering, order history, sales reports, messages.
-- Team Leader Portal: daily dashboard, walk-in sales, recipe-based production, alerts, reseller inquiry approval/rejection, reseller order handling, reports.
-- Owner Portal: executive dashboard, product pricing, reports, forecasts, account management, audit logs.
-- Portal pages use `app/templates/portals/base.html` plus one role template per portal: `reseller.html`, `team_leader.html`, and `owner.html`.
-- CSS is split by surface: `public.css` for public pages, `login.css` for login, `portal_base.css` for shared portal layout, and `app/static/css/portals/` for role-specific portal overrides.
-- `app/repositories.py` reads and writes PostgreSQL data for the current UI flows.
-- Image assets are stored in PostgreSQL `media_assets` as binary data and served through `/media/{filename}`.
-- PostgreSQL schema lives in `database/schema.sql` and is intentionally simplified to the portal workflows currently implemented.
-
-## Chatbot Configuration
-
-The Batangas Premium support chatbot uses the OpenRouter-compatible OpenAI client format when an API key is configured.
+The authoritative schema history is `database/migrations/`. Apply pending
+migrations without deleting data:
 
 ```powershell
-$env:OPENROUTER_API_KEY="your_openrouter_key"
-$env:OPENROUTER_MODEL="openai/gpt-4o-mini"
+.venv\Scripts\python.exe tools\migrate_database.py
 ```
 
-If `OPENROUTER_API_KEY` is not set, the app uses a local fallback that only answers from the approved Batangas Premium FAQ information.
+Applied migration checksums are stored in `schema_migrations`. Never modify an
+applied migration; add the next numbered SQL file.
+
+## Tests
+
+Install development dependencies and point the tests at a disposable PostgreSQL
+database whose name contains `test`:
+
+```powershell
+.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+$env:TEST_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5433/meattrack_test"
+.venv\Scripts\python.exe -m pytest -q
+```
+
+The test suite resets `TEST_DATABASE_URL`. It refuses to run database integration
+tests against a database without `test` in its name.
+
+## Demo accounts
+
+`tools/seed_database.py` creates owner, team-leader, and reseller accounts using
+the passwords from `.env`. Production deployment must not use the example values.
+
+## Production deployment
+
+The Compose stack keeps PostgreSQL private, gives FastAPI a dedicated non-superuser
+database role, publishes only Caddy on ports 80 and 443, checks service health,
+applies migrations before FastAPI starts, and persists PostgreSQL data in a named
+volume.
+
+See [deploy/README.md](deploy/README.md) for Hostinger VPS setup, firewall rules,
+service startup, daily database backups, off-site replication, restore drills,
+and updates.
+
+## Current functions
+
+- Public product, company, and reseller-partnership pages
+- Database-backed login with PBKDF2 password hashing
+- Reseller ordering, order history, reports, and messages
+- Team-leader sales, inventory, production, inquiries, fulfillment, and reports
+- Owner metrics, pricing, reports, forecasts, account administration, and logs
+- Transactional FEFO inventory deduction for sales and fulfillment
+- Optional OpenRouter-backed support chatbot with a local FAQ fallback

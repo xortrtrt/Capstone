@@ -2,17 +2,32 @@ import psycopg2
 from psycopg2.pool import ThreadedConnectionPool
 from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
+from threading import Lock
 
-from app.config import DATABASE_URL
+from app.config import DATABASE_POOL_MAX, DATABASE_POOL_MIN, database_dsn
 
-DSN = DATABASE_URL
+DSN = database_dsn()
 
-# Initialize thread-safe connection pool
-pool = ThreadedConnectionPool(1, 10, DSN)
+if DATABASE_POOL_MIN < 1 or DATABASE_POOL_MAX < DATABASE_POOL_MIN:
+    raise ValueError("DATABASE_POOL_MIN/MAX define an invalid connection pool size")
+
+pool: ThreadedConnectionPool | None = None
+_pool_lock = Lock()
+
+
+def get_pool() -> ThreadedConnectionPool:
+    """Create the database pool lazily after migrations have run."""
+    global pool
+    if pool is None:
+        with _pool_lock:
+            if pool is None:
+                pool = ThreadedConnectionPool(DATABASE_POOL_MIN, DATABASE_POOL_MAX, DSN)
+    return pool
 
 @contextmanager
 def get_db_cursor():
-    conn = pool.getconn()
+    connection_pool = get_pool()
+    conn = connection_pool.getconn()
     try:
         # RealDictCursor maps column names to dictionary keys
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -22,11 +37,12 @@ def get_db_cursor():
         conn.rollback()
         raise e
     finally:
-        pool.putconn(conn)
+        connection_pool.putconn(conn)
 
 @contextmanager
 def get_transaction_cursor():
-    conn = pool.getconn()
+    connection_pool = get_pool()
+    conn = connection_pool.getconn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             yield cur
@@ -35,7 +51,15 @@ def get_transaction_cursor():
         conn.rollback()
         raise e
     finally:
-        pool.putconn(conn)
+        connection_pool.putconn(conn)
+
+
+def close_pool() -> None:
+    global pool
+    with _pool_lock:
+        if pool is not None:
+            pool.closeall()
+            pool = None
 
 def fetch_all(query, params=None):
     with get_db_cursor() as cur:
