@@ -68,42 +68,6 @@ stock_units = ["kg", "g", "ml"]
 content_units = ["g", "kg", "ml"]
 recipe_units = ["g", "kg", "ml"]
 
-MEDIA_ASSETS_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS media_assets (
-    media_asset_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    filename text NOT NULL UNIQUE,
-    content_type text NOT NULL,
-    content bytea NOT NULL,
-    size_bytes integer NOT NULL CHECK (size_bytes >= 0),
-    checksum_sha256 text NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    CHECK (btrim(filename) <> ''),
-    CHECK (filename !~ '[\\\\/]'),
-    CHECK (btrim(content_type) <> ''),
-    CHECK (length(checksum_sha256) = 64)
-);
-"""
-
-
-def ensure_media_assets_table() -> None:
-    execute_write(MEDIA_ASSETS_TABLE_SQL)
-
-
-def media_asset_by_filename(filename: str):
-    ensure_media_assets_table()
-    row = fetch_one("""
-        SELECT filename, content_type, content, size_bytes, checksum_sha256, updated_at
-        FROM media_assets
-        WHERE filename = %s;
-    """, (filename,))
-    if row is None:
-        return None
-    cleaned = clean_row(row)
-    cleaned["content"] = bytes(cleaned["content"])
-    return cleaned
-
-
 def require_inventory_choice(value: object, choices: list[str], label: str) -> str:
     cleaned = normalize_inventory_text(str(value), label)
     for choice in choices:
@@ -484,16 +448,20 @@ def current_metrics() -> dict:
     }
 
 def add_log(actor_name: str, action: str, entity_name: str) -> None:
-    acc = fetch_one("SELECT account_id FROM accounts WHERE name = %s LIMIT 1;", (actor_name,))
-    acc_id = acc["account_id"] if acc else None
-    if not acc_id:
-        acc = fetch_one("SELECT account_id FROM accounts WHERE name = (SELECT business_name FROM resellers WHERE business_name = %s LIMIT 1) LIMIT 1;", (actor_name,))
-        acc_id = acc["account_id"] if acc else None
-    
-    execute_write("""
+    with get_transaction_cursor() as cur:
+        _add_log_with_cursor(cur, actor_name, action, "custom", None)
+
+
+def _add_log_with_cursor(cur, actor_name: str, action: str, entity_type: str, entity_id: int | None) -> None:
+    cur.execute("SELECT account_id FROM accounts WHERE name = %s LIMIT 1;", (actor_name,))
+    account = cur.fetchone()
+    cur.execute(
+        """
         INSERT INTO activity_logs (account_id, action, entity_type, entity_id, created_at)
         VALUES (%s, %s, %s, %s, %s);
-    """, (acc_id, action, 'custom', 0, datetime.now()))
+        """,
+        (account["account_id"] if account else None, action, entity_type, entity_id, datetime.now()),
+    )
 
 def add_inquiry(name: str, business_name: str, email: str, contact_number: str, message: str) -> dict:
     leader = fetch_one("SELECT account_id FROM accounts WHERE account_type = 'team_leader' LIMIT 1;")
@@ -555,8 +523,8 @@ def reject_inquiry(inquiry_id: int) -> bool:
     add_log("Maria Santos", "rejected_reseller_inquiry", f"Inquiry #{inquiry_id}")
     return True
 
-def deduct_stock_fefo(product_id: int, quantity: float):
-    batches = fetch_all("""
+def _deduct_stock_fefo(cur, product_id: int, quantity: Decimal) -> None:
+    cur.execute("""
         SELECT ib.batch_id AS product_batch_id, ib.quantity_available
         FROM inventory_batches ib
         JOIN inventory_items ii ON ii.item_id = ib.item_id
@@ -565,116 +533,200 @@ def deduct_stock_fefo(product_id: int, quantity: float):
           AND ib.quality_status = 'approved'
           AND ib.quantity_available > 0
           AND (ib.expiry_date IS NULL OR ib.expiry_date >= CURRENT_DATE)
-        ORDER BY ib.expiry_date ASC NULLS LAST, ib.batch_id ASC;
+        ORDER BY ib.expiry_date ASC NULLS LAST, ib.batch_id ASC
+        FOR UPDATE OF ib;
     """, (product_id,))
-    
+    batches = cur.fetchall()
+    available = sum((Decimal(batch["quantity_available"]) for batch in batches), Decimal("0"))
+    if available < quantity:
+        raise ValueError(f"Insufficient stock. Requested {quantity:g}, available {available:g}.")
+
     remaining = quantity
-    for b in batches:
+    for batch in batches:
         if remaining <= 0:
             break
-        b_id = b["product_batch_id"]
-        b_avail = float(b["quantity_available"])
-        take = min(b_avail, remaining)
-        
-        execute_write("""
+        batch_available = Decimal(batch["quantity_available"])
+        take = min(batch_available, remaining)
+        cur.execute("""
             UPDATE inventory_batches
             SET quantity_available = quantity_available - %s
-            WHERE batch_id = %s;
-        """, (take, b_id))
-        
+            WHERE batch_id = %s
+              AND quantity_available >= %s;
+        """, (take, batch["product_batch_id"], take))
+        if cur.rowcount != 1:
+            raise RuntimeError("Inventory changed while fulfilling the order. Please retry.")
         remaining -= take
 
+
+def deduct_stock_fefo(product_id: int, quantity: float) -> None:
+    amount = parse_inventory_decimal(quantity, "Quantity", "0.001")
+    if amount <= 0:
+        raise ValueError("Quantity must be greater than zero.")
+    with get_transaction_cursor() as cur:
+        _deduct_stock_fefo(cur, product_id, amount)
+
+
 def create_order(role: str, product_id: int, quantity: float, notes: str = "") -> dict:
-    product = product_by_id(product_id)
-    if product is None:
-        raise ValueError("Unknown product")
-    
+    amount = parse_inventory_decimal(quantity, "Quantity", "0.001")
+    if amount <= 0:
+        raise ValueError("Quantity must be greater than zero.")
+    if role not in {"reseller", "team-leader"}:
+        raise ValueError("Unknown order role")
+
     order_type = "reseller" if role == "reseller" else "walk_in"
-    reseller_id = None
     created_by_name = "Maria Santos"
-    
-    if role == "reseller":
-        res = fetch_one("SELECT reseller_id, business_name FROM resellers WHERE email = 'reseller@lipafresh.test' LIMIT 1;")
-        reseller_id = res["reseller_id"] if res else 1
-        created_by_name = res["business_name"] if res else "Lipa Fresh Mart"
-    
-    acc = fetch_one("SELECT account_id FROM accounts WHERE name = %s LIMIT 1;", (created_by_name,))
-    creator_id = acc["account_id"] if acc else None
-    
     status = "pending" if role == "reseller" else "fulfilled"
-    total = round(product["base_price"] * quantity, 2)
-    
-    ord_res = execute_write("""
-        INSERT INTO orders (order_type, reseller_id, created_by_account_id, approved_by_account_id, approved_at, status, order_date, fulfilled_at, total_amount, notes)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        RETURNING order_id, order_type, reseller_id, status, order_date, total_amount, notes;
-    """, (
-        order_type, reseller_id, creator_id,
-        creator_id if status == "fulfilled" else None,
-        datetime.now() if status == "fulfilled" else None,
-        status, date.today(),
-        datetime.now() if status == "fulfilled" else None,
-        total, notes
-    ), returning=True)
-    
-    order_id = ord_res["order_id"]
-    
-    oi = execute_write("""
-        INSERT INTO order_items (order_id, product_id, quantity, unit, unit_price)
-        VALUES (%s, %s, %s, %s, %s)
-        RETURNING order_item_id;
-    """, (order_id, product_id, quantity, product["unit"], product["base_price"]), returning=True)
-    
-    order_item_id = oi["order_item_id"]
-    
-    if status == "fulfilled":
-        deduct_stock_fefo(product_id, quantity)
-        add_log("Maria Santos", "created_walk_in_sale", f"Order #{order_id}")
-    else:
-        add_log(created_by_name, "created_reseller_order", f"Order #{order_id}")
-    
-    return clean_row(ord_res)
+    now = datetime.now()
+
+    with get_transaction_cursor() as cur:
+        cur.execute(
+            """
+            SELECT item_id AS product_id, name, unit, base_price
+            FROM inventory_items
+            WHERE item_id = %s
+              AND item_type = 'finished_product'
+              AND is_active = true
+            FOR SHARE;
+            """,
+            (product_id,),
+        )
+        product = cur.fetchone()
+        if product is None:
+            raise ValueError("Unknown or inactive product")
+
+        reseller_id = None
+        if role == "reseller":
+            cur.execute(
+                "SELECT reseller_id, business_name FROM resellers WHERE email = %s LIMIT 1;",
+                (roles["reseller"]["email"],),
+            )
+            reseller = cur.fetchone()
+            if reseller is None:
+                raise ValueError("The reseller account is not linked to a reseller record.")
+            reseller_id = reseller["reseller_id"]
+            created_by_name = reseller["business_name"]
+
+        cur.execute("SELECT account_id FROM accounts WHERE name = %s LIMIT 1;", (created_by_name,))
+        account = cur.fetchone()
+        if account is None:
+            raise ValueError("The order creator account was not found.")
+        creator_id = account["account_id"]
+
+        if status == "fulfilled":
+            _deduct_stock_fefo(cur, product_id, amount)
+
+        total = (Decimal(product["base_price"]) * amount).quantize(Decimal("0.01"))
+        cur.execute(
+            """
+            INSERT INTO orders (
+                order_type, reseller_id, created_by_account_id, approved_by_account_id,
+                approved_at, status, order_date, fulfilled_at, total_amount, notes
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING order_id, order_type, reseller_id, status, order_date, total_amount, notes;
+            """,
+            (
+                order_type,
+                reseller_id,
+                creator_id,
+                creator_id if status == "fulfilled" else None,
+                now if status == "fulfilled" else None,
+                status,
+                now,
+                now if status == "fulfilled" else None,
+                total,
+                notes,
+            ),
+        )
+        order = cur.fetchone()
+        cur.execute(
+            """
+            INSERT INTO order_items (order_id, product_id, quantity, unit, unit_price)
+            VALUES (%s, %s, %s, %s, %s);
+            """,
+            (order["order_id"], product_id, amount, product["unit"], product["base_price"]),
+        )
+        _add_log_with_cursor(
+            cur,
+            created_by_name,
+            "created_walk_in_sale" if status == "fulfilled" else "created_reseller_order",
+            "order",
+            order["order_id"],
+        )
+
+    return clean_row(order)
 
 def decide_order(order_id: int, decision: str) -> bool:
-    ord_res = fetch_one("SELECT * FROM orders WHERE order_id = %s;", (order_id,))
-    if not ord_res or ord_res["order_type"] != "reseller":
+    if decision not in {"approve", "reject", "fulfill"}:
         return False
-    if ord_res["status"] in {"fulfilled", "rejected"}:
-        return False
-    
-    leader = fetch_one("SELECT account_id FROM accounts WHERE account_type = 'team_leader' LIMIT 1;")
-    leader_id = leader["account_id"] if leader else None
-    
-    if decision == "approve":
-        execute_write("""
-            UPDATE orders 
-            SET status = 'approved', approved_by_account_id = %s, approved_at = %s 
-            WHERE order_id = %s;
-        """, (leader_id, datetime.now(), order_id))
-        add_log("Maria Santos", "approved_reseller_order", f"Order #{order_id}")
-        
-    elif decision == "reject":
-        execute_write("""
-            UPDATE orders 
-            SET status = 'rejected', approved_by_account_id = %s, approved_at = %s 
-            WHERE order_id = %s;
-        """, (leader_id, datetime.now(), order_id))
-        add_log("Maria Santos", "rejected_reseller_order", f"Order #{order_id}")
-        
-    elif decision == "fulfill":
-        execute_write("""
-            UPDATE orders 
-            SET status = 'fulfilled', fulfilled_at = %s 
-            WHERE order_id = %s;
-        """, (datetime.now(), order_id))
-        
-        items = fetch_all("SELECT product_id, quantity FROM order_items WHERE order_id = %s;", (order_id,))
-        for item in items:
-            deduct_stock_fefo(item["product_id"], float(item["quantity"]))
-            
-        add_log("Maria Santos", "fulfilled_reseller_order", f"Order #{order_id}")
-    else:
-        return False
+
+    with get_transaction_cursor() as cur:
+        cur.execute("SELECT * FROM orders WHERE order_id = %s FOR UPDATE;", (order_id,))
+        order = cur.fetchone()
+        if order is None or order["order_type"] != "reseller":
+            return False
+
+        allowed_statuses = {
+            "approve": {"pending"},
+            "reject": {"pending", "approved"},
+            "fulfill": {"approved"},
+        }
+        if order["status"] not in allowed_statuses[decision]:
+            if decision == "fulfill" and order["status"] == "pending":
+                raise ValueError("Approve the order before fulfilling it.")
+            return False
+
+        cur.execute("SELECT account_id, name FROM accounts WHERE account_type = 'team_leader' AND is_active = true LIMIT 1;")
+        leader = cur.fetchone()
+        if leader is None:
+            raise ValueError("No active team leader account is available.")
+
+        now = datetime.now()
+        if decision == "approve":
+            cur.execute(
+                """
+                UPDATE orders
+                SET status = 'approved', approved_by_account_id = %s, approved_at = %s
+                WHERE order_id = %s;
+                """,
+                (leader["account_id"], now, order_id),
+            )
+        elif decision == "reject":
+            cur.execute(
+                """
+                UPDATE orders
+                SET status = 'rejected', approved_by_account_id = %s, approved_at = %s
+                WHERE order_id = %s;
+                """,
+                (leader["account_id"], now, order_id),
+            )
+        else:
+            cur.execute("SELECT product_id, quantity FROM order_items WHERE order_id = %s;", (order_id,))
+            items = cur.fetchall()
+            if not items:
+                raise ValueError("The order has no items to fulfill.")
+            for item in items:
+                _deduct_stock_fefo(cur, item["product_id"], Decimal(item["quantity"]))
+            cur.execute(
+                """
+                UPDATE orders
+                SET status = 'fulfilled', fulfilled_at = %s
+                WHERE order_id = %s;
+                """,
+                (now, order_id),
+            )
+
+        _add_log_with_cursor(
+            cur,
+            leader["name"],
+            {
+                "approve": "approved_reseller_order",
+                "reject": "rejected_reseller_order",
+                "fulfill": "fulfilled_reseller_order",
+            }[decision],
+            "order",
+            order_id,
+        )
     return True
 
 

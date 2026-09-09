@@ -7,6 +7,11 @@ __pycache__/
 .ruff_cache/
 .env
 .env.*
-.env.example
+!.env.example
 pg_data/
 pg_log.txt
+node_modules/
+backups/
+.legacy-platform-backup/
+database/*_export.sql
+database/*_import.sql

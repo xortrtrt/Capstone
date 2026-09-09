@@ -401,7 +401,6 @@
                         <thead><tr><th>Order</th><th>Reseller</th><th>Product</th><th>Status</th><th>Total</th><th>Action</th></tr></thead>
                         <tbody>
                         {% for order in orders if order.order_type == "reseller" %}
-                            {% set order_locked = order.status in ["fulfilled", "rejected"] %}
                             <tr>
                                 <td>#{{ order.order_id }}</td>
                                 <td>{{ order.reseller }}</td>
@@ -410,9 +409,9 @@
                                 <td>{{ order.total_amount|currency }}</td>
                                 <td>
                                     <div class="table-actions">
-                                        <form action="/portal/team-leader/orders/{{ order.order_id }}/approve" method="post"><button class="icon-button" title="Approve" {% if order_locked %}disabled aria-disabled="true"{% endif %}><i data-lucide="check"></i></button></form>
-                                        <form action="/portal/team-leader/orders/{{ order.order_id }}/reject" method="post"><button class="icon-button danger" title="Reject" {% if order_locked %}disabled aria-disabled="true"{% endif %}><i data-lucide="x"></i></button></form>
-                                        <form action="/portal/team-leader/orders/{{ order.order_id }}/fulfill" method="post"><button class="icon-button" title="Fulfill" {% if order_locked %}disabled aria-disabled="true"{% endif %}><i data-lucide="package-check"></i></button></form>
+                                        <form action="/portal/team-leader/orders/{{ order.order_id }}/approve" method="post"><button class="icon-button" title="Approve" {% if order.status != "pending" %}disabled aria-disabled="true"{% endif %}><i data-lucide="check"></i></button></form>
+                                        <form action="/portal/team-leader/orders/{{ order.order_id }}/reject" method="post"><button class="icon-button danger" title="Reject" {% if order.status not in ["pending", "approved"] %}disabled aria-disabled="true"{% endif %}><i data-lucide="x"></i></button></form>
+                                        <form action="/portal/team-leader/orders/{{ order.order_id }}/fulfill" method="post"><button class="icon-button" title="Fulfill" {% if order.status != "approved" %}disabled aria-disabled="true"{% endif %}><i data-lucide="package-check"></i></button></form>
                                     </div>
                                 </td>
                             </tr>

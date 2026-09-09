@@ -1,5 +1,3 @@
-BEGIN;
-
 -- MEATTRACK PostgreSQL schema (classroom simplified)
 -- Keeps only the tables used by the current public site and portals.
 
@@ -29,21 +27,6 @@ CREATE TABLE activity_logs (
     entity_type text,
     entity_id bigint,
     created_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE media_assets (
-    media_asset_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    filename text NOT NULL UNIQUE,
-    content_type text NOT NULL,
-    content bytea NOT NULL,
-    size_bytes integer NOT NULL CHECK (size_bytes >= 0),
-    checksum_sha256 text NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    CHECK (btrim(filename) <> ''),
-    CHECK (filename !~ '[\\/]'),
-    CHECK (btrim(content_type) <> ''),
-    CHECK (length(checksum_sha256) = 64)
 );
 
 CREATE TABLE inquiries (
@@ -228,5 +211,20 @@ CREATE INDEX ix_inventory_batches_fefo ON inventory_batches (item_id, expiry_dat
 CREATE INDEX ix_orders_reseller_status ON orders (reseller_id, status);
 CREATE INDEX ix_activity_logs_account_created ON activity_logs (account_id, created_at DESC);
 CREATE INDEX ix_alerts_status_type ON alerts (status, alert_type);
-
-COMMIT;
+CREATE INDEX ix_accounts_reseller ON accounts (reseller_id);
+CREATE INDEX ix_inquiries_assigned_leader ON inquiries (assigned_team_leader_account_id);
+CREATE INDEX ix_inquiries_reviewed_by ON inquiries (reviewed_by_account_id);
+CREATE INDEX ix_resellers_approved_by ON resellers (approved_by_account_id);
+CREATE INDEX ix_product_recipes_material ON product_recipes (material_item_id);
+CREATE INDEX ix_orders_created_by ON orders (created_by_account_id);
+CREATE INDEX ix_orders_approved_by ON orders (approved_by_account_id);
+CREATE INDEX ix_order_items_order ON order_items (order_id);
+CREATE INDEX ix_order_items_product ON order_items (product_id);
+CREATE INDEX ix_sales_reports_submitted_by ON sales_reports (submitted_by_account_id);
+CREATE INDEX ix_sales_reports_reseller ON sales_reports (reseller_id);
+CREATE INDEX ix_sales_reports_department ON sales_reports (department_id);
+CREATE INDEX ix_alerts_product ON alerts (product_id);
+CREATE INDEX ix_alerts_product_batch ON alerts (product_batch_id);
+CREATE INDEX ix_alerts_raw_material ON alerts (raw_material_id);
+CREATE INDEX ix_forecast_runs_run_by ON forecast_runs (run_by_account_id);
+CREATE INDEX ix_forecast_results_product ON forecast_results (product_id);
