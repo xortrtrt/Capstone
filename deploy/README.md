@@ -20,6 +20,13 @@ The production stack uses Docker Compose with three services:
    `docker compose exec app python tools/seed_database.py`.
 8. Confirm `https://YOUR_DOMAIN/health` returns `{"status":"ok"}`.
 
+The PostgreSQL image reads `POSTGRES_*` and `APP_DB_*` initialization values only
+when it creates an empty data volume. Changing those values later does not rotate
+passwords in an existing database. For an established installation, change the
+role password inside PostgreSQL first, update `.env` to the same value, and then
+recreate the application container. Never delete the production volume as a
+password-rotation shortcut.
+
 Do not expose container port 5432 in production. The database initialization
 script makes the application role the database owner without granting PostgreSQL
 server administration. At the VPS firewall, allow only
