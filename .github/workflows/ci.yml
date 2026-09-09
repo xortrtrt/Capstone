@@ -32,6 +32,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      - name: Verify Linux shell scripts
+        shell: bash
+        run: |
+          if grep -n $'\r' database/init/001_create_app_role.sh deploy/backup.sh; then
+            echo "Linux shell scripts must use LF line endings."
+            exit 1
+          fi
+          sh -n database/init/001_create_app_role.sh deploy/backup.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
